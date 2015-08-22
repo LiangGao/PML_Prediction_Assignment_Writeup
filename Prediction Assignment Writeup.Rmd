@@ -1,0 +1,90 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Liang"
+date: "August 21, 2015"
+output: html_document
+---
+
+## Background
+A large amount of data about personal activity was collected, and divided in to [training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [test](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) data. The training data contains the data recorded by accelerometers on the belt, forearm, arm, and dumbbell of 6 participants, as well as the manner in which they did the exercise. The goal of this project is to predict the manner types in the test data set.
+
+## Initialization
+Due to the size of the data, it is helpful to make use of parallel computing:
+```{r, message = F, warning = F}
+library(doParallel)
+registerDoParallel(cores=2)
+```
+After both the training data and test data were loaded, I noticed that there were lots of `NA`s and empty entries.
+```{r}
+training0 = read.csv('pml-training.csv')
+testing0 = read.csv('pml-testing.csv')
+dim(training0)
+table(colSums(is.na(training0)))
+```
+The table above means there are 93 columns have no `NA` at all, while the rest 67 columns have 19216 `NA`s each. Considering the total number of measurements is 19622, it is reasonable to omit those columns with 98% `NA` values.
+```{r}
+training1 = training0[, colSums(is.na(training0)) == 0]
+```
+Similarly, there are many colunmns with a lot of empty entries. As a result, I decied to remove those columuns as well.
+```{r}
+table(colSums(training1 == ''))
+training2 = training1[, colSums(training1 == '') == 0]
+```
+In addition, I removed the first seven columns which are just participants' information and timestamps.
+```{r}
+names(training2[,1:7])
+training3 = training2[,-(1:7)]
+```
+Now I have a tidy and clean training data set to do the analysis.
+
+## Cross Validation
+I split the training data into two parts: a new training data set (70% of the original training data), and a testing data set (30% of the original training data).
+```{r, message = F, warning = F}
+library(caret)
+set.seed(2015)
+inTrain = createDataPartition(training3$classe, p = 0.7, list = FALSE)
+training = training3[ inTrain,]
+testing = training3[-inTrain,]
+```
+The reason why I am using **random subsampling without replacement** instead of k-fold cross validation is that the original data were in "chunks" (6 participants) and k-fold would require more work.
+
+## Linear Discriminant Analysis
+Without further data processing, I gave the Linear discriminant analysis (LDA) a try:
+```{r, message = F, warning = F}
+modlda = train(classe ~., data = training, method = 'lda')
+plda_train = predict(modlda, training)
+confusionMatrix(training$classe, plda_train)$table  # in-sample error
+confusionMatrix(training$classe, plda_train)$overall
+plda_test = predict(modlda, testing)
+confusionMatrix(testing$classe, plda_test)$table   # out-sample error
+confusionMatrix(testing$classe, plda_test)$overall
+predict(modlda, testing0)           # predict of the original test data set with 20 obs.
+```
+The whole process was very quick, but the accuracy was only about **0.7** for both training and testing data set if using `confusionMatrix`. I decided not to trust the prediction here.
+
+## Classification and Regression Trees with Bootstrap Aggregating
+Then I decided to use Classification and Regression Trees with Bootstrap aggregating (Bagged CART). Due to the fact that the training would take several minutes, I cached the trained model for the report.
+```{r, message = F, warning = F}
+if (file.exists('mymodTB.rds')) {
+        modfitTB = readRDS("./mymodTB.rds")
+} else {
+        modfitTB = train(classe ~., method = 'treebag', data = training)
+        saveRDS(modfitTB, file="mymodTB.rds")
+}
+pTB_train = predict(modfitTB, training)
+confusionMatrix(training$classe, pTB_train)$table
+confusionMatrix(training$classe, pTB_train)$overall
+pTB_test = predict(modfitTB, testing)
+confusionMatrix(testing$classe, pTB_test)$table
+confusionMatrix(testing$classe, pTB_test)$overall
+predict(modfitTB, testing0)
+```
+With **1.000 in-sample accuracy**, and **0.985 out-sample accuracy**, I believe that Bagged CART (method = 'treebag') is a suitable way for the prediction, and I am confident that the prediction is accurate.
+
+## Other Methods
+I also tried the PCA preprocessing, which reduced the training time a little. But I decided not to use PCA preprocessing because it may result inaccurate prediction. In fact, PCA of 0.9-thresh together with Bagged CART gave 0.954 out-sample accuracy, but the prediction has 2 different values than the prediction without PCA preprocessing.
+
+Other than LDA and Bagged CART described above, I also tried Recursive Partitioning and Regression Trees (method = 'rpart'), Random Forest (method = 'rf'), Generalized Boosted Regression Models (method = 'gbm'), and Naive Bayes (method = 'nb'). However, all of these algorithms took very long time to run (>30 min), while LDA took less than a minute and Bagged CART took about 10 minutes. (Bagged CART with PCA took only 5 minutes)
+
+## Conclusion
+The prediction by Bagged CART was submitted and was graded 20/20.
